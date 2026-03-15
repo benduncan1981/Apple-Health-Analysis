@@ -1,30 +1,26 @@
 <!DOCTYPE html>
 <html>
-
 <head>
 
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 
-<title>Apple Health Deep Analysis</title>
+<title>Apple Health Large File Analyzer</title>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
 
 <style>
 
 body{
 font-family:-apple-system,BlinkMacSystemFont;
-background:#f2f2f7;
+background:#f4f4f7;
 margin:20px;
 }
 
 .container{
-max-width:1300px;
+max-width:1200px;
 margin:auto;
 }
-
-h1{font-weight:600}
 
 .upload{
 border:2px dashed #bbb;
@@ -41,35 +37,17 @@ gap:10px;
 flex-wrap:wrap;
 }
 
-select,input,button{
+select,button{
 padding:8px;
 border-radius:6px;
 border:1px solid #ccc;
 }
 
 canvas{
-margin-top:25px;
-background:white;
-border-radius:12px;
-padding:10px;
-}
-
-.stats{
 margin-top:20px;
 background:white;
-padding:15px;
-border-radius:12px;
-}
-
-table{
-width:100%;
-border-collapse:collapse;
-margin-top:10px;
-}
-
-td,th{
-padding:6px;
-border-bottom:1px solid #ddd;
+border-radius:10px;
+padding:10px;
 }
 
 </style>
@@ -80,12 +58,15 @@ border-bottom:1px solid #ddd;
 
 <div class="container">
 
-<h1>Apple Health Deep Analysis Dashboard</h1>
+<h1>Apple Health Large Export Analyzer</h1>
 
 <div class="upload">
 
-<input type="file" id="fileInput" accept=".xml">
-<p>Upload Apple Health <b>export.xml</b></p>
+<input type="file" id="fileInput">
+
+<p>Upload Apple Health export.xml</p>
+
+<div id="progress"></div>
 
 </div>
 
@@ -94,87 +75,88 @@ border-bottom:1px solid #ddd;
 <select id="metricA"></select>
 <select id="metricB"></select>
 
-<button onclick="drawChart()">Compare Metrics</button>
-
-<button onclick="scanCorrelations()">Scan All Correlations</button>
-
-<input id="eventName" placeholder="Event label">
-<input id="eventDate" type="date">
-
-<button onclick="addEvent()">Add Timeline Event</button>
+<button onclick="compare()">Compare</button>
 
 </div>
 
-<div class="stats" id="correlationScore"></div>
-
-<canvas id="lineChart"></canvas>
-<canvas id="scatterChart"></canvas>
-
-<div class="stats">
-
-<h3>Strongest Correlations</h3>
-
-<table id="correlationTable">
-
-<tr>
-<th>Metric A</th>
-<th>Metric B</th>
-<th>Correlation</th>
-</tr>
-
-</table>
-
-</div>
+<canvas id="chart"></canvas>
 
 </div>
 
 <script>
 
-let rawData={}
-let dailyData={}
-let lineChart
-let scatterChart
-let events=[]
+const CHUNK_SIZE = 2 * 1024 * 1024
 
-document.getElementById("fileInput").addEventListener("change",loadFile)
+let rawData = {}
+let dailyData = {}
 
-function loadFile(e){
+document.getElementById("fileInput").addEventListener("change",handleFile)
 
-const reader=new FileReader()
+async function handleFile(e){
 
-reader.onload=function(evt){
-parseXML(evt.target.result)
-}
+const file = e.target.files[0]
 
-reader.readAsText(e.target.files[0])
+const reader = file.stream().getReader()
 
-}
+let decoder = new TextDecoder()
 
-function parseXML(xmlText){
+let buffer = ""
 
-const parser=new DOMParser()
+let total = 0
 
-const xml=parser.parseFromString(xmlText,"text/xml")
+while(true){
 
-const records=xml.getElementsByTagName("Record")
+const {done,value} = await reader.read()
 
-for(let r of records){
+if(done) break
 
-const type=r.getAttribute("type")
-const value=parseFloat(r.getAttribute("value"))
-const date=new Date(r.getAttribute("startDate"))
+buffer += decoder.decode(value,{stream:true})
 
-if(!value) continue
+processBuffer()
 
-if(!rawData[type]) rawData[type]=[]
+total += value.length
 
-rawData[type].push({date,value})
+document.getElementById("progress").innerText =
+"Processed "+Math.round(total/1024/1024)+" MB"
 
 }
 
 buildDaily()
-
 populateSelectors()
+
+}
+
+function processBuffer(){
+
+const lines = buffer.split("<Record ")
+
+buffer = lines.pop()
+
+for(let line of lines){
+
+parseRecord("<Record "+line)
+
+}
+
+}
+
+function parseRecord(xml){
+
+const typeMatch = xml.match(/type="([^"]+)"/)
+const valueMatch = xml.match(/value="([^"]+)"/)
+const dateMatch = xml.match(/startDate="([^"]+)"/)
+
+if(!typeMatch || !valueMatch || !dateMatch) return
+
+const type = typeMatch[1]
+const value = parseFloat(valueMatch[1])
+const date = new Date(dateMatch[1])
+
+if(!value) return
+
+if(!rawData[type]) rawData[type] = []
+
+rawData[type].push({date,value})
 
 }
 
@@ -186,7 +168,7 @@ const map={}
 
 rawData[type].forEach(entry=>{
 
-const day=entry.date.toISOString().split("T")[0]
+const day = entry.date.toISOString().split("T")[0]
 
 if(!map[day]) map[day]=[]
 
@@ -198,9 +180,10 @@ dailyData[type]={}
 
 Object.keys(map).forEach(day=>{
 
-const arr=map[day]
+const arr = map[day]
 
-dailyData[type][day]=arr.reduce((a,b)=>a+b)/arr.length
+dailyData[type][day] =
+arr.reduce((a,b)=>a+b)/arr.length
 
 })
 
@@ -215,7 +198,7 @@ const B=document.getElementById("metricB")
 
 Object.keys(dailyData).forEach(type=>{
 
-const name=type.replace("HKQuantityTypeIdentifier","")
+let name = type.replace("HKQuantityTypeIdentifier","")
 
 let opt=document.createElement("option")
 opt.value=type
@@ -228,7 +211,7 @@ B.appendChild(opt.cloneNode(true))
 
 }
 
-function drawChart(){
+function compare(){
 
 const A=document.getElementById("metricA").value
 const B=document.getElementById("metricB").value
@@ -236,145 +219,34 @@ const B=document.getElementById("metricB").value
 const dataA=dailyData[A]
 const dataB=dailyData[B]
 
-const dates=Object.keys(dataA).filter(d=>dataB[d])
+const dates = Object.keys(dataA).filter(d=>dataB[d])
 
-const valuesA=dates.map(d=>dataA[d])
-const valuesB=dates.map(d=>dataB[d])
+const valuesA = dates.map(d=>dataA[d])
+const valuesB = dates.map(d=>dataB[d])
 
-const corr=pearson(valuesA,valuesB)
+drawChart(dates,valuesA,valuesB,A,B)
 
-document.getElementById("correlationScore").innerHTML=
-"<b>Correlation:</b> "+corr.toFixed(3)
+}
 
-if(lineChart) lineChart.destroy()
+let chart
 
-lineChart=new Chart(document.getElementById("lineChart"),{
+function drawChart(dates,a,b,A,B){
+
+if(chart) chart.destroy()
+
+chart=new Chart(document.getElementById("chart"),{
 
 type:"line",
 
 data:{
 labels:dates,
 datasets:[
-{label:A,data:valuesA},
-{label:B,data:valuesB}
+{label:A,data:a},
+{label:B,data:b}
 ]
-},
-
-options:{
-interaction:{mode:"index"},
-scales:{x:{type:"time",time:{unit:"month"}}}
 }
 
 })
-
-drawScatter(valuesA,valuesB,A,B)
-
-}
-
-function drawScatter(a,b,A,B){
-
-if(scatterChart) scatterChart.destroy()
-
-const points=a.map((v,i)=>({x:v,y:b[i]}))
-
-scatterChart=new Chart(document.getElementById("scatterChart"),{
-
-type:"scatter",
-
-data:{
-datasets:[{
-label:A+" vs "+B,
-data:points
-}]
-}
-
-})
-
-}
-
-function pearson(x,y){
-
-const n=x.length
-
-let sumX=0,sumY=0,sumXY=0,sumX2=0,sumY2=0
-
-for(let i=0;i<n;i++){
-
-sumX+=x[i]
-sumY+=y[i]
-sumXY+=x[i]*y[i]
-sumX2+=x[i]*x[i]
-sumY2+=y[i]*y[i]
-
-}
-
-return (n*sumXY-sumX*sumY)/
-Math.sqrt((n*sumX2-sumX*sumX)*(n*sumY2-sumY*sumY))
-
-}
-
-function scanCorrelations(){
-
-const metrics=Object.keys(dailyData)
-
-const table=document.getElementById("correlationTable")
-
-table.innerHTML="<tr><th>Metric A</th><th>Metric B</th><th>Correlation</th></tr>"
-
-let results=[]
-
-for(let i=0;i<metrics.length;i++){
-
-for(let j=i+1;j<metrics.length;j++){
-
-const A=metrics[i]
-const B=metrics[j]
-
-const dataA=dailyData[A]
-const dataB=dailyData[B]
-
-const dates=Object.keys(dataA).filter(d=>dataB[d])
-
-if(dates.length<20) continue
-
-const valuesA=dates.map(d=>dataA[d])
-const valuesB=dates.map(d=>dataB[d])
-
-const corr=pearson(valuesA,valuesB)
-
-results.push({A,B,corr})
-
-}
-
-}
-
-results.sort((a,b)=>Math.abs(b.corr)-Math.abs(a.corr))
-
-results.slice(0,20).forEach(r=>{
-
-const row=document.createElement("tr")
-
-row.innerHTML=
-"<td>"+r.A+"</td>"+
-"<td>"+r.B+"</td>"+
-"<td>"+r.corr.toFixed(3)+"</td>"
-
-table.appendChild(row)
-
-})
-
-}
-
-function addEvent(){
-
-const name=document.getElementById("eventName").value
-const date=document.getElementById("eventDate").value
-
-if(!name||!date) return
-
-events.push({name,date})
-
-alert("Event saved")
 
 }
 
