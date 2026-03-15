@@ -1,256 +1,203 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-
-<title>Apple Health Large File Analyzer</title>
-
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Apple Health Intelligence Dashboard</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-
+<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
 <style>
-
-body{
-font-family:-apple-system,BlinkMacSystemFont;
-background:#f4f4f7;
-margin:20px;
-}
-
-.container{
-max-width:1200px;
-margin:auto;
-}
-
-.upload{
-border:2px dashed #bbb;
-padding:40px;
-text-align:center;
-background:white;
-border-radius:12px;
-}
-
-.controls{
-margin-top:20px;
-display:flex;
-gap:10px;
-flex-wrap:wrap;
-}
-
-select,button{
-padding:8px;
-border-radius:6px;
-border:1px solid #ccc;
-}
-
-canvas{
-margin-top:20px;
-background:white;
-border-radius:10px;
-padding:10px;
-}
-
+body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif;background:#f4f4f7;margin:0;padding:20px;}
+.container{max-width:1300px;margin:auto;}
+h1{font-weight:600;text-align:center;}
+.upload{border:2px dashed #bbb;padding:40px;text-align:center;background:white;border-radius:12px;margin-bottom:20px;}
+.controls{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:20px;}
+select,input,button{padding:8px;border-radius:6px;border:1px solid #ccc;}
+canvas{background:white;border-radius:12px;padding:10px;margin-top:20px;}
+.stats{background:white;padding:15px;border-radius:12px;margin-top:20px;}
+table{width:100%;border-collapse:collapse;margin-top:10px;}
+td,th{padding:6px;border-bottom:1px solid #ddd;}
+.panel{margin-top:30px;}
 </style>
-
 </head>
-
 <body>
-
 <div class="container">
-
-<h1>Apple Health Large Export Analyzer</h1>
-
+<h1>Apple Health Intelligence Dashboard</h1>
 <div class="upload">
-
 <input type="file" id="fileInput">
-
-<p>Upload Apple Health export.xml</p>
-
+<p>Upload <b>export.xml</b></p>
 <div id="progress"></div>
-
 </div>
 
 <div class="controls">
-
 <select id="metricA"></select>
 <select id="metricB"></select>
-
-<button onclick="compare()">Compare</button>
-
+<button onclick="compareMetrics()">Compare Metrics</button>
+<button onclick="scanAllCorrelations()">Scan All Correlations</button>
+<input type="text" id="eventName" placeholder="Event label">
+<input type="date" id="eventDate">
+<button onclick="addEvent()">Add Event</button>
 </div>
 
-<canvas id="chart"></canvas>
-
+<div class="stats" id="correlationScore"></div>
+<canvas id="lineChart"></canvas>
+<canvas id="scatterChart"></canvas>
+<div class="panel">
+<h3>Strongest Correlations</h3>
+<table id="correlationTable">
+<tr><th>Metric A</th><th>Metric B</th><th>Correlation</th></tr>
+</table>
+</div>
+<div class="panel">
+<h3>Timeline Events</h3>
+<div id="eventList"></div>
+</div>
 </div>
 
 <script>
+const CHUNK_SIZE = 2*1024*1024;
+let rawData={}, dailyData={}, events=[];
+let lineChart, scatterChart;
 
-const CHUNK_SIZE = 2 * 1024 * 1024
-
-let rawData = {}
-let dailyData = {}
-
-document.getElementById("fileInput").addEventListener("change",handleFile)
+document.getElementById("fileInput").addEventListener("change", handleFile);
 
 async function handleFile(e){
-
-const file = e.target.files[0]
-
-const reader = file.stream().getReader()
-
-let decoder = new TextDecoder()
-
-let buffer = ""
-
-let total = 0
-
-while(true){
-
-const {done,value} = await reader.read()
-
-if(done) break
-
-buffer += decoder.decode(value,{stream:true})
-
-processBuffer()
-
-total += value.length
-
-document.getElementById("progress").innerText =
-"Processed "+Math.round(total/1024/1024)+" MB"
-
-}
-
-buildDaily()
-populateSelectors()
-
+    const file = e.target.files[0];
+    const reader = file.stream().getReader();
+    const decoder = new TextDecoder();
+    let buffer = "", total = 0;
+    while(true){
+        const {done,value} = await reader.read();
+        if(done) break;
+        buffer += decoder.decode(value,{stream:true});
+        processBuffer();
+        total += value.length;
+        document.getElementById("progress").innerText="Processed "+Math.round(total/1024/1024)+" MB";
+    }
+    buildDailyData();
+    populateSelectors();
 }
 
 function processBuffer(){
-
-const lines = buffer.split("<Record ")
-
-buffer = lines.pop()
-
-for(let line of lines){
-
-parseRecord("<Record "+line)
-
-}
-
+    const lines = buffer.split("<Record ");
+    buffer = lines.pop();
+    for(let line of lines) parseRecord("<Record "+line);
 }
 
 function parseRecord(xml){
-
-const typeMatch = xml.match(/type="([^"]+)"/)
-const valueMatch = xml.match(/value="([^"]+)"/)
-const dateMatch = xml.match(/startDate="([^"]+)"/)
-
-if(!typeMatch || !valueMatch || !dateMatch) return
-
-const type = typeMatch[1]
-const value = parseFloat(valueMatch[1])
-const date = new Date(dateMatch[1])
-
-if(!value) return
-
-if(!rawData[type]) rawData[type] = []
-
-rawData[type].push({date,value})
-
+    const typeMatch = xml.match(/type="([^"]+)"/);
+    const valueMatch = xml.match(/value="([^"]+)"/);
+    const dateMatch = xml.match(/startDate="([^"]+)"/);
+    if(!typeMatch || !valueMatch || !dateMatch) return;
+    const type = typeMatch[1], value = parseFloat(valueMatch[1]), date = new Date(dateMatch[1]);
+    if(!value) return;
+    if(!rawData[type]) rawData[type]=[];
+    rawData[type].push({date,value});
 }
 
-function buildDaily(){
-
-Object.keys(rawData).forEach(type=>{
-
-const map={}
-
-rawData[type].forEach(entry=>{
-
-const day = entry.date.toISOString().split("T")[0]
-
-if(!map[day]) map[day]=[]
-
-map[day].push(entry.value)
-
-})
-
-dailyData[type]={}
-
-Object.keys(map).forEach(day=>{
-
-const arr = map[day]
-
-dailyData[type][day] =
-arr.reduce((a,b)=>a+b)/arr.length
-
-})
-
-})
-
+function buildDailyData(){
+    Object.keys(rawData).forEach(type=>{
+        const map = {};
+        rawData[type].forEach(entry=>{
+            const day = entry.date.toISOString().split("T")[0];
+            if(!map[day]) map[day]=[];
+            map[day].push(entry.value);
+        });
+        dailyData[type]={};
+        Object.keys(map).forEach(day=>{
+            const arr = map[day];
+            dailyData[type][day] = arr.reduce((a,b)=>a+b)/arr.length;
+        });
+    });
 }
 
 function populateSelectors(){
-
-const A=document.getElementById("metricA")
-const B=document.getElementById("metricB")
-
-Object.keys(dailyData).forEach(type=>{
-
-let name = type.replace("HKQuantityTypeIdentifier","")
-
-let opt=document.createElement("option")
-opt.value=type
-opt.text=name
-
-A.appendChild(opt.cloneNode(true))
-B.appendChild(opt.cloneNode(true))
-
-})
-
+    const A=document.getElementById("metricA"), B=document.getElementById("metricB");
+    Object.keys(dailyData).forEach(type=>{
+        let name=type.replace("HKQuantityTypeIdentifier","");
+        let optA=document.createElement("option"); optA.value=type; optA.text=name;
+        let optB=optA.cloneNode(true);
+        A.appendChild(optA); B.appendChild(optB);
+    });
 }
 
-function compare(){
-
-const A=document.getElementById("metricA").value
-const B=document.getElementById("metricB").value
-
-const dataA=dailyData[A]
-const dataB=dailyData[B]
-
-const dates = Object.keys(dataA).filter(d=>dataB[d])
-
-const valuesA = dates.map(d=>dataA[d])
-const valuesB = dates.map(d=>dataB[d])
-
-drawChart(dates,valuesA,valuesB,A,B)
-
+function compareMetrics(){
+    const A=document.getElementById("metricA").value, B=document.getElementById("metricB").value;
+    const dataA=dailyData[A], dataB=dailyData[B];
+    const dates = Object.keys(dataA).filter(d=>dataB[d]);
+    const valuesA=dates.map(d=>dataA[d]), valuesB=dates.map(d=>dataB[d]);
+    const corr = pearson(valuesA,valuesB);
+    document.getElementById("correlationScore").innerHTML="<b>Correlation:</b> "+corr.toFixed(3);
+    drawLineChart(dates,valuesA,valuesB,A,B);
+    drawScatterChart(valuesA,valuesB,A,B);
 }
 
-let chart
-
-function drawChart(dates,a,b,A,B){
-
-if(chart) chart.destroy()
-
-chart=new Chart(document.getElementById("chart"),{
-
-type:"line",
-
-data:{
-labels:dates,
-datasets:[
-{label:A,data:a},
-{label:B,data:b}
-]
+function drawLineChart(dates,a,b,A,B){
+    if(lineChart) lineChart.destroy();
+    lineChart = new Chart(document.getElementById("lineChart"),{
+        type:"line",
+        data:{labels:dates,datasets:[{label:A,data:a,borderColor:"#007aff",tension:0.1},{label:B,data:b,borderColor:"#ff3b30",tension:0.1}]},
+        options:{responsive:true,interaction:{mode:"index"},scales:{x:{type:"time",time:{unit:"day"}}}}
+    });
 }
 
-})
-
+function drawScatterChart(a,b,A,B){
+    if(scatterChart) scatterChart.destroy();
+    const points=a.map((v,i)=>({x:v,y:b[i]}));
+    scatterChart = new Chart(document.getElementById("scatterChart"),{
+        type:"scatter",
+        data:{datasets:[{label:A+" vs "+B,data:points,backgroundColor:"#007aff"}]},
+        options:{responsive:true,plugins:{legend:{display:true}}}
+    });
 }
 
+function pearson(x,y){
+    const n=x.length;
+    let sumX=0,sumY=0,sumXY=0,sumX2=0,sumY2=0;
+    for(let i=0;i<n;i++){sumX+=x[i];sumY+=y[i];sumXY+=x[i]*y[i];sumX2+=x[i]*x[i];sumY2+=y[i]*y[i];}
+    return (n*sumXY-sumX*sumY)/Math.sqrt((n*sumX2-sumX*sumX)*(n*sumY2-sumY*sumY));
+}
+
+function scanAllCorrelations(){
+    const metrics=Object.keys(dailyData);
+    const table=document.getElementById("correlationTable");
+    table.innerHTML="<tr><th>Metric A</th><th>Metric B</th><th>Correlation</th></tr>";
+    let results=[];
+    for(let i=0;i<metrics.length;i++){
+        for(let j=i+1;j<metrics.length;j++){
+            const A=metrics[i], B=metrics[j];
+            const dataA=dailyData[A], dataB=dailyData[B];
+            const dates=Object.keys(dataA).filter(d=>dataB[d]);
+            if(dates.length<20) continue;
+            const valuesA=dates.map(d=>dataA[d]), valuesB=dates.map(d=>dataB[d]);
+            results.push({A,B,corr:pearson(valuesA,valuesB)});
+        }
+    }
+    results.sort((a,b)=>Math.abs(b.corr)-Math.abs(a.corr));
+    results.slice(0,20).forEach(r=>{
+        const row=document.createElement("tr");
+        row.innerHTML="<td>"+r.A+"</td><td>"+r.B+"</td><td>"+r.corr.toFixed(3)+"</td>";
+        table.appendChild(row);
+    });
+}
+
+function addEvent(){
+    const name=document.getElementById("eventName").value;
+    const date=document.getElementById("eventDate").value;
+    if(!name||!date) return;
+    events.push({name,date});
+    renderEvents();
+}
+
+function renderEvents(){
+    const el=document.getElementById("eventList");
+    el.innerHTML="";
+    events.forEach(e=>{
+        const div=document.createElement("div");
+        div.innerText=e.date+" — "+e.name;
+        el.appendChild(div);
+    });
+}
 </script>
-
 </body>
 </html>
