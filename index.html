@@ -3,79 +3,108 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Apple Health Intelligence Dashboard</title>
+<title>Apple Health Easy Dashboard</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
 <style>
 body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif;background:#f4f4f7;margin:0;padding:20px;}
-.container{max-width:1300px;margin:auto;}
+.container{max-width:1200px;margin:auto;}
 h1{font-weight:600;text-align:center;}
-.upload{border:2px dashed #bbb;padding:40px;text-align:center;background:white;border-radius:12px;margin-bottom:20px;}
-.controls{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:20px;}
-select,input,button{padding:8px;border-radius:6px;border:1px solid #ccc;}
+.upload, .controls, .panel{background:white;border-radius:12px;padding:20px;margin-bottom:20px;}
+label{display:block;margin:5px 0;font-weight:500;}
+select,input,button{padding:8px;border-radius:6px;border:1px solid #ccc;margin-right:10px;margin-bottom:10px;}
+button{cursor:pointer;}
 canvas{background:white;border-radius:12px;padding:10px;margin-top:20px;}
-.stats{background:white;padding:15px;border-radius:12px;margin-top:20px;}
+.progress-container{margin-top:10px;}
+.stats{margin-top:20px;}
 table{width:100%;border-collapse:collapse;margin-top:10px;}
 td,th{padding:6px;border-bottom:1px solid #ddd;}
-.panel{margin-top:30px;}
+.instructions{font-size:0.9em;color:#555;margin-bottom:10px;}
 </style>
 </head>
 <body>
 <div class="container">
-<h1>Apple Health Intelligence Dashboard</h1>
+<h1>Apple Health Easy Dashboard</h1>
+
+<!-- Step 1: Upload -->
 <div class="upload">
+<h2>Step 1: Upload your export.xml</h2>
+<p class="instructions">Select your Apple Health export file (export.xml) below. The system will safely stream and parse it.</p>
 <input type="file" id="fileInput">
-<p>Upload <b>export.xml</b></p>
-<div id="progress"></div>
+<div class="progress-container">
+<progress id="progressBar" value="0" max="100" style="width:100%;height:20px;"></progress>
+<div id="progressText"></div>
+</div>
 </div>
 
+<!-- Step 2: Metric selection and comparison -->
 <div class="controls">
-<select id="metricA"></select>
-<select id="metricB"></select>
+<h2>Step 2: Compare Metrics</h2>
+<p class="instructions">Select two metrics from your Apple Health data to compare. You can also scan all correlations.</p>
+<label>Metric A: <select id="metricA"></select></label>
+<label>Metric B: <select id="metricB"></select></label>
 <button onclick="compareMetrics()">Compare Metrics</button>
 <button onclick="scanAllCorrelations()">Scan All Correlations</button>
-<input type="text" id="eventName" placeholder="Event label">
-<input type="date" id="eventDate">
-<button onclick="addEvent()">Add Event</button>
+<div class="stats" id="correlationScore"></div>
 </div>
 
-<div class="stats" id="correlationScore"></div>
+<!-- Step 3: Timeline Events -->
+<div class="controls">
+<h2>Step 3: Add Timeline Events</h2>
+<p class="instructions">Add events such as medication start, illness, or stress periods. These will overlay on charts.</p>
+<label>Event Label: <input type="text" id="eventName" placeholder="E.g., Started Methylphenidate"></label>
+<label>Event Date: <input type="date" id="eventDate"></label>
+<button onclick="addEvent()">Add Event</button>
+<div class="stats" id="eventList"></div>
+</div>
+
+<!-- Charts -->
+<div class="panel">
+<h2>Step 4: Visualize Data</h2>
+<p class="instructions">Line chart and scatter chart of selected metrics. Timeline events are shown below charts.</p>
 <canvas id="lineChart"></canvas>
 <canvas id="scatterChart"></canvas>
+</div>
+
+<!-- Correlation table -->
 <div class="panel">
-<h3>Strongest Correlations</h3>
+<h2>Step 5: Strongest Correlations</h2>
+<p class="instructions">Click “Scan All Correlations” to see the top correlations between all metrics.</p>
 <table id="correlationTable">
 <tr><th>Metric A</th><th>Metric B</th><th>Correlation</th></tr>
 </table>
 </div>
-<div class="panel">
-<h3>Timeline Events</h3>
-<div id="eventList"></div>
-</div>
-</div>
 
 <script>
-const CHUNK_SIZE = 2*1024*1024;
-let rawData={}, dailyData={}, events=[];
+const rawData={}, dailyData={}, events=[];
 let lineChart, scatterChart;
 
 document.getElementById("fileInput").addEventListener("change", handleFile);
 
 async function handleFile(e){
     const file = e.target.files[0];
+    if(!file) return;
     const reader = file.stream().getReader();
     const decoder = new TextDecoder();
-    let buffer = "", total = 0;
+    let buffer = "", totalRead = 0;
+    const fileSize = file.size;
+
+    document.getElementById("progressText").innerText="Starting upload...";
+
     while(true){
-        const {done,value} = await reader.read();
+        const {done, value} = await reader.read();
         if(done) break;
         buffer += decoder.decode(value,{stream:true});
         processBuffer();
-        total += value.length;
-        document.getElementById("progress").innerText="Processed "+Math.round(total/1024/1024)+" MB";
+        totalRead += value.length;
+        const percent = (totalRead/fileSize)*100;
+        document.getElementById("progressBar").value = percent;
+        document.getElementById("progressText").innerText = `Uploaded ${Math.round(totalRead/1024/1024)} MB of ${Math.round(fileSize/1024/1024)} MB (${percent.toFixed(2)}%)`;
     }
+
     buildDailyData();
     populateSelectors();
+    document.getElementById("progressText").innerText="Upload complete!";
 }
 
 function processBuffer(){
@@ -89,7 +118,7 @@ function parseRecord(xml){
     const valueMatch = xml.match(/value="([^"]+)"/);
     const dateMatch = xml.match(/startDate="([^"]+)"/);
     if(!typeMatch || !valueMatch || !dateMatch) return;
-    const type = typeMatch[1], value = parseFloat(valueMatch[1]), date = new Date(dateMatch[1]);
+    const type = typeMatch[1], value=parseFloat(valueMatch[1]), date=new Date(dateMatch[1]);
     if(!value) return;
     if(!rawData[type]) rawData[type]=[];
     rawData[type].push({date,value});
@@ -97,7 +126,7 @@ function parseRecord(xml){
 
 function buildDailyData(){
     Object.keys(rawData).forEach(type=>{
-        const map = {};
+        const map={};
         rawData[type].forEach(entry=>{
             const day = entry.date.toISOString().split("T")[0];
             if(!map[day]) map[day]=[];
@@ -114,7 +143,7 @@ function buildDailyData(){
 function populateSelectors(){
     const A=document.getElementById("metricA"), B=document.getElementById("metricB");
     Object.keys(dailyData).forEach(type=>{
-        let name=type.replace("HKQuantityTypeIdentifier","");
+        const name=type.replace("HKQuantityTypeIdentifier","");
         let optA=document.createElement("option"); optA.value=type; optA.text=name;
         let optB=optA.cloneNode(true);
         A.appendChild(optA); B.appendChild(optB);
@@ -136,7 +165,10 @@ function drawLineChart(dates,a,b,A,B){
     if(lineChart) lineChart.destroy();
     lineChart = new Chart(document.getElementById("lineChart"),{
         type:"line",
-        data:{labels:dates,datasets:[{label:A,data:a,borderColor:"#007aff",tension:0.1},{label:B,data:b,borderColor:"#ff3b30",tension:0.1}]},
+        data:{labels:dates,datasets:[
+            {label:A,data:a,borderColor:"#007aff",tension:0.1},
+            {label:B,data:b,borderColor:"#ff3b30",tension:0.1}
+        ]},
         options:{responsive:true,interaction:{mode:"index"},scales:{x:{type:"time",time:{unit:"day"}}}}
     });
 }
